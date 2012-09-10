@@ -101,15 +101,15 @@ int romu_read_byte_with_timeout(byte *b, long sec)
 
 int romu_readbyte(byte *b)
 {
-	return romu_read_byte_with_timeout(b, 10);
+	return romu_read_byte_with_timeout(b, 1);
 }
 
 int romu_readword(word *wp)
 {
 	int ret = 0;
 	byte b1, b2;
-	ret |= romu_read_byte_with_timeout(&b1, 10);
-	ret |= romu_read_byte_with_timeout(&b2, 10);
+	ret |= romu_read_byte_with_timeout(&b1, 1);
+	ret |= romu_read_byte_with_timeout(&b2, 1);
 	*wp = b1;
 	*wp <<= 8;
 	*wp |= b2;
@@ -239,7 +239,7 @@ int romu_read_block(word addr, byte *block, word size)
 
 	for (j = 0; j < size; j++) 
 	{
-		if (romu_read_byte_with_timeout(block + j, 5) == ROMU_TIMEOUT) 
+		if (romu_read_byte_with_timeout(block + j, 1) == ROMU_TIMEOUT) 
 		{
 			debug(DBG_VERBOSE, "ERROR: readbyte timed out, byte %d", j);
 			return -ROMU_TIMEOUT;
@@ -285,7 +285,6 @@ int romu_write_block(word addr, byte *block, word size)
 	if (!romu_ready) return -1;
 
 	debug(DBG_VERBOSE, "Writing %d-byte block at address %04xh...", ROMU_BLOCK_SIZE, addr);
-	fflush(stdout);
 		
 	romu_sendbyte('W');
 	romu_sendbyte(size);
@@ -347,12 +346,10 @@ int romu_hidden_write(word addr, byte data)
 	romu_sendbyte(1);
 	romu_sendbyte(HIBYTE(addr));
 	romu_sendbyte(LOBYTE(addr));
-
-	checksum = 'w' + WRITESZ + HIBYTE(addr) + LOBYTE(addr);
-	
 	romu_sendbyte(data);
-	checksum = data;
 
+	checksum = 'w' + 1 + HIBYTE(addr) + LOBYTE(addr) + data;
+	
 	romu_sendbyte(checksum);
 
 	romu_readbyte(&b);
@@ -367,4 +364,17 @@ int romu_hidden_write(word addr, byte data)
 	}
 
 	return RET_OK;
+}
+
+int romu_hidden_write_with_retry(word addr, byte data)
+{
+	int tries;
+	int max_tries = 5;
+
+	for (tries = 1; tries <= max_tries; tries++) {
+		if (romu_hidden_write(addr, data) == RET_OK)
+			return RET_OK;
+	}
+
+	return -ROMU_COMMAND_FAIL;
 }

@@ -46,15 +46,20 @@
 - init
 {
 	sidx = 0;
+	displayFunc = NULL;
 	return self;
 }
-
 
 - (int) additem: (char *) text
 {
 	[super resize: [super length] + 1];
 	[super set: [super length] - 1 data: text];
 	return [super length] - 1;
+}
+
+- (void) setDisplayFunc: (void (*)()) f
+{
+	displayFunc = f;
 }
 
 - (int) select
@@ -71,6 +76,8 @@
 
 	while (1) {
 		erase();
+
+		if (displayFunc) displayFunc();
 
 		for (i = 0; i < [super length]; i++) {
 			text = [super get: i];

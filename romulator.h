@@ -36,5 +36,6 @@ int romu_init();
 int romu_write_buffer(word addr, byte *buffer, word len);
 int romu_read_buffer(word addr, byte *buffer, word len);
 int romu_hidden_write(word addr, byte data);
+int romu_hidden_write_with_retry(word addr, byte data);
 
 #endif /* _ROMULATOR_H */

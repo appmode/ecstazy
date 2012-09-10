@@ -31,6 +31,7 @@ void _debug_syserr(int level, const char *func, const char *file, int line, cons
 		va_start(va, fmt);
 		vasprintf(&buf, fmt, va);
 		fprintf(debug_dest, "ERR %s (%s:%d) %s: %s\n", func, file, line, buf, strerror(errno));
+		fflush(debug_dest);
 		va_end(va);
 		free(buf);
 	}
@@ -44,6 +45,7 @@ void _debug(int level, const char *func, const char *file, int line, const char 
 		va_start(va, fmt);
 		vasprintf(&buf, fmt, va);
 		fprintf(debug_dest, "DBG %s (%s:%d) %s\n", func, file, line, buf);
+		fflush(debug_dest);
 		va_end(va);
 		free(buf);
 	}

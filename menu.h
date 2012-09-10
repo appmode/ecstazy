@@ -26,12 +26,14 @@
 {
 	Array items;
 	int sidx;
+	void (*displayFunc)();
 }
 
 + new;
 - init;
 
 - (int) additem: (char *) text;
+- (void) setDisplayFunc: (void (*)()) f;
 
 - (int) select;
 

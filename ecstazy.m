@@ -53,11 +53,11 @@ enum {
 	MODE_ROMWRITE
 };
 
-#define ECSTAZY_VERSION "0.81"
+#define ECSTAZY_VERSION "0.9"
 #define DEBUG_LOGFILE "./ecstazy.log"
 #define DEFAULT_ECU_DEV  "/dev/ttyUSB0"
-#define DEFAULT_WBO2_DEV  "/dev/ttyUSB1"
-#define DEFAULT_ROMULATOR_DEV  "/dev/ttyUSB2"
+#define DEFAULT_WBO2_DEV  "/dev/ttyUSB2"
+#define DEFAULT_ROMULATOR_DEV  "/dev/ttyUSB1"
 #define DEFAULT_POWBAL_CYLS 6
 #define INIT_TRIES          3
 
@@ -369,6 +369,7 @@ int rom_read(char *romfile)
   int i;
   struct stat stbuf;
 	word addr;
+	int tries;
 
   if (lstat(romfile, &stbuf) == 0) {
     fprintf(stderr, "ERROR: File %s already exists. Try a different name.\n", romfile);
@@ -389,8 +390,12 @@ int rom_read(char *romfile)
 		printf("\rReading %d-byte block at address %04xh...", ROMU_BLOCK_SIZE, addr);
 		fflush(stdout);
 
-		if (romu_read_buffer(addr, data, ROMU_BLOCK_SIZE) != ROMU_OK) {
-			fprintf(stderr, "Exiting: Error reading block %d...\n", i);
+		for (tries = 1; tries <= 7; tries++)
+			if (romu_read_buffer(addr, data, ROMU_BLOCK_SIZE) == ROMU_OK)
+				break;
+
+		if (tries > 7) {
+			fprintf(stderr, "Exiting: Error writing block %d...\n", i);
 			return 1;
 		}
 
@@ -412,6 +417,7 @@ int rom_write(char *romfile)
   int i, br;
   struct stat stbuf;
 	word addr;
+	int tries;
 
   if (lstat(romfile, &stbuf) < 0) {
     fprintf(stderr, "ERROR: stat(%s) failed: %s\n", romfile, strerror(errno));
@@ -434,7 +440,7 @@ int rom_write(char *romfile)
 		addr = i * ROMU_BLOCK_SIZE;
 		bzero(data, ROMU_BLOCK_SIZE);
 
-		printf("\rReading %d-byte block at address %04xh...", ROMU_BLOCK_SIZE, addr);
+		printf("\rWriting %d-byte block at address %04xh...", ROMU_BLOCK_SIZE, addr);
 		fflush(stdout);
 
     if ((br = fread(data, 1, ROMU_BLOCK_SIZE, infp)) != ROMU_BLOCK_SIZE)
@@ -443,8 +449,12 @@ int rom_write(char *romfile)
       exit(1);
     }
 
-		if (romu_write_buffer(addr, data, ROMU_BLOCK_SIZE) != ROMU_OK) {
-			fprintf(stderr, "Exiting: Error reading block %d...\n", i);
+		for (tries = 1; tries <= 7; tries++)
+			if (romu_write_buffer(addr, data, ROMU_BLOCK_SIZE) == ROMU_OK)
+				break;
+
+		if (tries > 7) {
+			fprintf(stderr, "Exiting: Error writing block %d...\n", i);
 			return 1;
 		}
 	}

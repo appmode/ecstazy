@@ -40,13 +40,13 @@
           int off = redata->mapent->offset + (y * redata->mapent->cols * redata->mapent->datawidth) + (x * redata->mapent->datawidth); \
           switch (redata->mapent->datawidth) { \
             case DATA_WORD: \
-              if (romu_hidden_write(off, (redata->mapblock[y][x] >> 8) & 0xFF) < 0 || \
-              		romu_hidden_write(off+1, redata->mapblock[y][x] & 0xFF) < 0) \
+              if (romu_hidden_write_with_retry(off, (redata->mapblock[y][x] >> 8) & 0xFF) < 0 || \
+              		romu_hidden_write_with_retry(off+1, redata->mapblock[y][x] & 0xFF) < 0) \
 								romu_ready = false; \
               break; \
             case DATA_BYTE: \
             default: \
-              if (romu_hidden_write(off, redata->mapblock[y][x]) < 0) \
+              if (romu_hidden_write_with_retry(off, redata->mapblock[y][x]) < 0) \
 								romu_ready = false; \
 					} \
 				} \
@@ -136,10 +136,16 @@ typedef struct {
 	int vs_start_y;
 	int vs_end_x;
 	int vs_end_y;
+	int vb_start_x;
+	int vb_start_y;
+	int vb_end_x;
+	int vb_end_y;
 } ROMEDITDATA;
 
 int edit_rom_map(ROMEDITDATA *, ROMMAPTABENT *);
 int edit_rom_param(ROMEDITDATA *, ROMPARTABENT *);
+void *edit_rom_daq_thread(void *);
+void show_dev_status();
 
 /* {{{ scale index functions */
 
@@ -605,11 +611,11 @@ void scaledata(char *buffer, int len, ROMEDITDATA *d)
 		factor = -factor;
 	for (i = 0; i < d->mapent->rows; i++)
 		for (j = 0; j < d->mapent->cols; j++) {
-			if (d->vs_start_y >= 0 &&
-					d->vs_end_y >= 0 &&
-					d->vs_start_x >= 0 &&
-					d->vs_end_x >= 0 &&
-					i >= d->vs_start_y && i <= d->vs_end_y && j >= d->vs_start_x && j <= d->vs_end_x) {
+			if (d->vb_start_y >= 0 &&
+					d->vb_end_y >= 0 &&
+					d->vb_start_x >= 0 &&
+					d->vb_end_x >= 0 &&
+					i >= d->vb_start_y && i <= d->vb_end_y && j >= d->vb_start_x && j <= d->vb_end_x) {
 				if (d->mapent->fconvto)
 					v = d->mapent->fconvto(d->mapblock[i][j]) * factor;
 				else
@@ -620,6 +626,22 @@ void scaledata(char *buffer, int len, ROMEDITDATA *d)
 				d->editbufpos[i][j] = strlen(d->editbuffer[i][j]) + 1;
 			}
 		}
+}
+/* }}} */
+
+/* {{{ current_map_value */
+double current_map_value(ROMEDITDATA *d, int y, int x) 
+{
+	double v;
+	if (*d->editbuffer[y][x] != 0) {
+		v = strtod(d->editbuffer[y][x], NULL);
+	} else {
+		if (d->mapent->fconvto)
+			v	= d->mapent->fconvto(d->mapblock[y][x]);
+		else
+			v = d->mapblock[y][x];
+	}
+	return v;
 }
 /* }}} */
 
@@ -723,6 +745,8 @@ int edit_rom(const char *romfile)
 	Menu m;
 	ROMPARTABENT *pp;
 	ROMMAPTABENT *mp;
+	pthread_t thread;
+	int rc;
 
 	if (lstat(romfile, &stbuf) < 0) {
 		fprintf(stderr, "ERROR: stat(%s): %s\n", romfile, strerror(errno));
@@ -739,6 +763,13 @@ int edit_rom(const char *romfile)
 	fseek(infp, 0, SEEK_SET);
 	fread(d.rombuf, sizeof(byte), ROMSZ, infp);
 
+	pthread_mutex_init(&ecudata_mutex, NULL);
+
+	if ((rc = pthread_create(&thread, NULL, edit_rom_daq_thread, NULL))) {
+    printf("ERROR; return code from pthread_create() is %d\n", rc);
+    exit(-1);
+  }
+	
 	initscr();
 	start_color();
 	cbreak();
@@ -774,6 +805,8 @@ int edit_rom(const char *romfile)
 	[m additem: "Quit"];
 
 	while (1) {
+		[m setDisplayFunc: show_dev_status];
+
 		j = [m select];
 
 		if (j == [m length] - 1)
@@ -817,6 +850,15 @@ int edit_rom(const char *romfile)
 	fclose(outfp);
 
 	endwin();
+
+	pthread_cancel(thread);
+	pthread_mutex_destroy(&ecudata_mutex);
+
+	ecu_close();
+	ecu_status = STATUS_IDLE;
+
+//	wbo2_close();
+//	wbo2_status = STATUS_IDLE;
 
 	return 0;
 }
@@ -883,10 +925,17 @@ int edit_rom_param(ROMEDITDATA *d, ROMPARTABENT *par)
 				switch (par->datawidth) {
 					case DATA_BYTE:
 						d->rombuf[par->offset] = val;
+						if (romu_ready)
+            	if (romu_hidden_write_with_retry(par->offset, d->rombuf[par->offset]) < 0)
+								romu_ready = false;
 						break;
 					case DATA_WORD:
 						d->rombuf[par->offset] = val >> 8;
 						d->rombuf[par->offset + 1] = val & 0xFF;
+						if (romu_ready)
+            	if (romu_hidden_write_with_retry(par->offset, d->rombuf[par->offset]) < 0 || 
+									romu_hidden_write_with_retry(par->offset + 1, d->rombuf[par->offset + 1]) < 0)
+								romu_ready = false;
 						break;
 				}
 				*entrybuffer = 0;
@@ -971,6 +1020,7 @@ void *edit_rom_daq_thread(void *idp)
 	log_fh = fopen(LIVEDATA_LOG_FILE, "w");
 
 	while (1) {
+		/*
 		if (wbo2_status == STATUS_IDLE) {
 			wbo2_status = STATUS_CONNECTING;
 			if (wbo2_init(wbo2dev, 10) == RET_OK && 
@@ -981,6 +1031,7 @@ void *edit_rom_daq_thread(void *idp)
 				wbo2_status = STATUS_IDLE;
 			}
 		}
+*/
 
 		if (ecu_status == STATUS_IDLE) {
 			ecu_status = STATUS_CONNECTING;
@@ -1043,6 +1094,46 @@ void *edit_rom_daq_thread(void *idp)
 }
 /* }}} */
 
+/* {{{ show_dev_status */
+void show_dev_status()
+{
+	char *status;
+	char tmpbuf[BUFSIZ];
+	int scrsz_y, scrsz_x;
+
+	getmaxyx(stdscr, scrsz_y, scrsz_x);
+
+		attrset(Pair(COLOR_WHITE, COLOR_BLACK)|A_BOLD);
+
+		switch (ecu_status) {
+			case 0: status = "Disconnected"; break;
+			case 1: status = "Connecting"; break;
+			case 2: status = "Streaming"; break;
+		}
+
+		sprintf(tmpbuf, "ECU: %s", status);
+		mvprintw(scrsz_y - 3, scrsz_x - strlen(tmpbuf), "%s", tmpbuf);
+
+		switch (wbo2_status) {
+			case 0: status = "Disconnected"; break;
+			case 1: status = "Connecting"; break;
+			case 2: status = "Streaming"; break;
+		}
+
+		sprintf(tmpbuf, "WBO2: %s", status);
+		mvprintw(scrsz_y - 2, scrsz_x - strlen(tmpbuf), "%s", tmpbuf);
+
+		switch (romu_ready) {
+			case 1: status = "Connected"; break;
+			case 0: status = "Disconnected"; break;
+		}
+
+		sprintf(tmpbuf, "Romulator: %s", status);
+		mvprintw(scrsz_y - 1, scrsz_x - strlen(tmpbuf), "%s", tmpbuf);
+
+}
+/* }}} */
+
 /* {{{ edit_rom_map */
 int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 {
@@ -1052,13 +1143,12 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 	int fg, bg, at;
 	double realval;
 	int entrymode = 0;
-	char *entrytext = NULL;
 	char entrybuffer[50];
 	int entrybufpos = 0;
 	int entryloc_x, entryloc_y;
 	void (*entrycallback)(char *buffer, int len, ROMEDITDATA *d);
-	int vs_ts_x, vs_ts_y;
-	int vs_te_x, vs_te_y;
+	int vs_ts_x = -1, vs_ts_y = -1;
+	int vs_te_x = -1, vs_te_y = -1;
 	double mtrace_value_x = -1, mtrace_value_y = -1;
 	int mtrace_x[2]={-1,-1}, mtrace_y[2]={-1,-1};
 	double mtrace_scale_x[2]={-1,-1}, mtrace_scale_y[2]={-1,-1};
@@ -1069,16 +1159,16 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 	double mtrace_interp_val;
 	int vselect = 0;
 	int scrsz_x, scrsz_y;
-	pthread_t thread;
 	fd_set readset;
 	struct timeval tv;
-	char *status;
 	char tmpbuf[BUFSIZ];
 
 	getmaxyx(stdscr, scrsz_y, scrsz_x);
 
 	d->vs_start_x = d->vs_end_x = -1;
 	d->vs_start_y = d->vs_end_y = -1;
+	d->vb_start_x = d->vb_end_x = -1;
+	d->vb_start_y = d->vb_end_y = -1;
 
 	cur_x = 0;
 	cur_y = 0;
@@ -1087,43 +1177,13 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 
 	check_set_flags((word*)d->mapblock, (byte*)d->flags, MAX_MAP_WIDTH, d->mapent->rows, d->mapent->cols);
 
-	pthread_mutex_init(&ecudata_mutex, NULL);
 
-	if ((rc = pthread_create(&thread, NULL, edit_rom_daq_thread, NULL))) {
-    printf("ERROR; return code from pthread_create() is %d\n", rc);
-    exit(-1);
-  }
-	
 	while (1) {
 		erase();
 
 		attrset(Pair(COLOR_WHITE, COLOR_BLACK)|A_BOLD);
 
-		switch (ecu_status) {
-			case 0: status = "Not connected"; break;
-			case 1: status = "Connecting"; break;
-			case 2: status = "Streaming"; break;
-		}
-
-		sprintf(tmpbuf, "ECU: %s", status);
-		mvprintw(scrsz_y - 3, scrsz_x - strlen(tmpbuf), "%s", tmpbuf);
-
-		switch (wbo2_status) {
-			case 0: status = "Not connected"; break;
-			case 1: status = "Connecting"; break;
-			case 2: status = "Streaming"; break;
-		}
-
-		sprintf(tmpbuf, "WBO2: %s", status);
-		mvprintw(scrsz_y - 2, scrsz_x - strlen(tmpbuf), "%s", tmpbuf);
-
-		switch (romu_ready) {
-			case 1: status = "Ready"; break;
-			case 0: status = "Not ready"; break;
-		}
-
-		sprintf(tmpbuf, "Romulator: %s", status);
-		mvprintw(scrsz_y - 1, scrsz_x - strlen(tmpbuf), "%s", tmpbuf);
+		show_dev_status();
 
 		attrset(Pair(COLOR_RED, COLOR_BLACK)|A_BOLD);
 
@@ -1268,24 +1328,26 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 					vs_ts_y = MIN(d->vs_start_y, cur_y);
 					vs_te_x = MAX(cur_x, d->vs_start_x);
 					vs_te_y = MAX(cur_y, d->vs_start_y);
-
-					if (y >= vs_ts_y && y <= vs_te_y && x >= vs_ts_x && x <= vs_te_x)
-						bg = COLOR_BLUE;
-				} else if (d->vs_start_y >= 0 && d->vs_end_y >= 0 && d->vs_start_x >= 0 && d->vs_end_x >= 0 &&
-						y >= d->vs_start_y && y <= d->vs_end_y && x >= d->vs_start_x && x <= d->vs_end_x)
-					bg = COLOR_GREEN;
+				}
 
 				if (cur_y == y && cur_x == x)
 					bg = COLOR_WHITE;
+				else if (vselect && y >= vs_ts_y && y <= vs_te_y && x >= vs_ts_x && x <= vs_te_x)
+					bg = COLOR_BLUE;
+				else if (d->vb_start_y >= 0 && d->vb_end_y >= 0 && d->vb_start_x >= 0 && d->vb_end_x >= 0 &&
+						y >= d->vb_start_y && y <= d->vb_end_y && x >= d->vb_start_x && x <= d->vb_end_x)
+					bg = COLOR_GREEN;
+
+				if (*d->editbuffer[y][x] != 0)
+					fg = COLOR_RED;
 
 				if (bg != COLOR_BLACK && fg == COLOR_WHITE)
 					fg = COLOR_BLACK;
+
 				attrset(Pair(fg,bg)|at);
 
 				if (*d->editbuffer[y][x] != 0) {
-					attrset(Pair(COLOR_WHITE, COLOR_RED));
 					mvprintw(y+1, LEGEND_Y_LEN + (x*LEGEND_X_LEN), "%s", d->editbuffer[y][x]);
-					attrset(Pair(COLOR_WHITE, COLOR_BLACK));
 				} else {
 					if (d->mapent->fconvto)
 						realval = d->mapent->fconvto(d->mapblock[y][x]);
@@ -1364,6 +1426,11 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 							d->vs_end_y = MAX(cur_y, d->vs_start_y);
 							d->vs_start_x = MIN(d->vs_start_x, cur_x);
 							d->vs_start_y = MIN(d->vs_start_y, cur_y);
+							d->vb_end_x = d->vs_end_x;
+							d->vb_end_y = d->vs_end_y;
+							d->vb_start_x = d->vs_start_x;
+							d->vb_start_y = d->vs_start_y;
+							d->vs_end_x = d->vs_end_y = d->vs_start_x = d->vs_start_y = -1;
 							vselect = 0;
 						} else {
 							d->vs_start_x = cur_x;
@@ -1372,14 +1439,40 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 						}
 						break;
 
-					case 't':
-						if (d->flags[cur_y][cur_x] & FLAG_BIT_8_PRESENT) {
-							d->flags[cur_y][cur_x] &= ~FLAG_BIT_8_PRESENT;
-						} else {
-							d->flags[cur_y][cur_x] |= FLAG_BIT_8_PRESENT;
+					case 'p':
+						//char pastebuffer[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+						//memset(pastebuffer, 0, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
+						if (d->vb_start_y >= 0 && d->vb_start_x >= 0 && d->vb_end_y >= 0 && d->vb_end_x >= 0) {
+							for (y = d->vb_start_y; y <= d->vb_end_y; y++) {
+								for (x = d->vb_start_x; x <= d->vb_end_x; x++) {
+									sprintf(d->editbuffer[cur_y + (y - d->vb_start_y)][cur_x + (x - d->vb_start_x)], "%.02f", current_map_value(d, y, x));
+								}
+							}
 						}
-						sprintf(tmpbuf, "%f", d->mapent->fconvto(d->mapblock[cur_y][cur_x]));
-						d->mapblock[cur_y][cur_x] = d->mapent->fconvfrom(tmpbuf, d->flags[cur_y][cur_x]);
+						break;
+
+					case 't':
+						if (d->vb_start_y >= 0 && d->vb_start_x >= 0 && d->vb_end_y >= 0 && d->vb_end_x >= 0) {
+							for (y = d->vb_start_y; y <= d->vb_end_y; y++) {
+								for (x = d->vb_start_x; x <= d->vb_end_x; x++) {
+									if (d->flags[y][x] & FLAG_BIT_8_PRESENT) {
+										d->flags[y][x] &= ~FLAG_BIT_8_PRESENT;
+									} else {
+										d->flags[y][x] |= FLAG_BIT_8_PRESENT;
+									}
+									sprintf(tmpbuf, "%f", d->mapent->fconvto(d->mapblock[y][x]));
+									d->mapblock[y][x] = d->mapent->fconvfrom(tmpbuf, d->flags[y][x]);
+								}
+							}
+						} else {
+							if (d->flags[cur_y][cur_x] & FLAG_BIT_8_PRESENT) {
+								d->flags[cur_y][cur_x] &= ~FLAG_BIT_8_PRESENT;
+							} else {
+								d->flags[cur_y][cur_x] |= FLAG_BIT_8_PRESENT;
+							}
+							sprintf(tmpbuf, "%f", d->mapent->fconvto(d->mapblock[cur_y][cur_x]));
+							d->mapblock[cur_y][cur_x] = d->mapent->fconvfrom(tmpbuf, d->flags[cur_y][cur_x]);
+						}
 						break;
 						
 					case 'w':
@@ -1410,7 +1503,6 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 					case 's':
 						entrymode = 1;
 						entrybufpos = 0;
-						entrytext = "Scale Factor (ie 0.5)";
 						entrycallback = scaledata;
 						entryloc_x = 23;
 						entryloc_y = scrsz_y - 1;
@@ -1460,15 +1552,6 @@ int edit_rom_map(ROMEDITDATA *d, ROMMAPTABENT *mapent)
 	}	
 
 endmaploop:
-
-	pthread_cancel(thread);
-	pthread_mutex_destroy(&ecudata_mutex);
-
-	ecu_close();
-	ecu_status = STATUS_IDLE;
-
-	wbo2_close();
-	wbo2_status = STATUS_IDLE;
 
 	return 0;
 }
