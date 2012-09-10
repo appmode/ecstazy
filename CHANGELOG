@@ -1,0 +1,17 @@
+Ecstazy ChangeLog
+
+------­--------------------------------
+Release 0.81
+------­--------------------------------
+Fixed bug with ROM parameter editing - was not saving changes as expected
+Fixed bug with rom editor display - status could sometimes be in a reverse color when it shouldn't.
+
+------­--------------------------------
+Release 0.8
+------­--------------------------------
+Initial release!
+Integration of romutools (-r and -w options) has not yet been tested.
+ROM editing is working
+Active tests are working
+Power balance test is just conceptual at this point
+
