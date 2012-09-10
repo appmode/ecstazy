@@ -4,7 +4,9 @@ ecstazy
 Ecstazy Nissan 300ZX Diagnostic Tuning Suite
 
 This is the engine management software I used in my 300zx as part of the 
-GeekMyRide project : http://www.geekmyride.org/wiki/index.php/Flame's_300ZX
+GeekMyRide project : 
+
+http://www.geekmyride.org/wiki/index.php/Flame's_300ZX
 
 I am not the original author of this software.
 
